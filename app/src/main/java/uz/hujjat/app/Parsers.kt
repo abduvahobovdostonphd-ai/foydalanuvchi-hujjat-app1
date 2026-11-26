@@ -12,10 +12,11 @@ sealed interface Content {
     data class Text(val text: String) : Content
     data class Table(val rows: List<List<String>>) : Content
     data class Slides(val slides: List<String>) : Content
-    data class Pdf(val uri: Uri) : Content
+    data class Pdf(val holder: PdfHolder) : Content
 }
 
-data class Loaded(val name: String, val content: Content)
+/** uri: faylning asl manzili. Yangi (hali saqlanmagan) hujjatda null. */
+data class Loaded(val name: String, val content: Content, val uri: Uri?)
 
 /**
  * Fayllarni ichki ko'rinishga o'giradi. Hech qanday tashqi kutubxona va internet ishlatilmaydi.
@@ -44,7 +45,7 @@ object Parsers {
         val name = displayName(ctx, uri)
         val ext = name.substringAfterLast('.', "").lowercase()
         val content: Content = when (ext) {
-            "pdf" -> Content.Pdf(uri)
+            "pdf" -> Content.Pdf(PdfHolder(ctx, uri))
 
             "docx", "dotx" -> {
                 val files = readZip(ctx, uri) { it == "word/document.xml" }
@@ -99,7 +100,17 @@ object Parsers {
 
             else -> throw IllegalStateException("\".$ext\" formati hozircha qo'llab-quvvatlanmaydi.")
         }
-        return Loaded(name, content)
+        return Loaded(name, content, uri)
+    }
+
+    fun size(ctx: Context, uri: Uri): Long {
+        try {
+            ctx.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+                if (c.moveToFirst() && !c.isNull(0)) return c.getLong(0)
+            }
+        } catch (_: Exception) {
+        }
+        return 0L
     }
 
     private fun readPlain(ctx: Context, uri: Uri): String {

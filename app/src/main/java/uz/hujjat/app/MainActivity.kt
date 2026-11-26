@@ -1,128 +1,51 @@
 package uz.hujjat.app
 
-import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val initial: Uri? = if (intent?.action == Intent.ACTION_VIEW) intent.data else null
-        setContent {
-            HujjatTheme {
-                Root(initial)
-            }
-        }
-    }
-}
-
-@Composable
-fun HujjatTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
-    val scheme = if (dark) {
-        darkColorScheme(
-            primary = Color(0xFF4FB6D3),
-            onPrimary = Color(0xFF06222B),
-            background = Color(0xFF0C1317),
-            surface = Color(0xFF142027),
-            onBackground = Color(0xFFE6EEF1),
-            onSurface = Color(0xFFE6EEF1)
-        )
-    } else {
-        lightColorScheme(
-            primary = Color(0xFF0B6E8A),
-            onPrimary = Color.White,
-            background = Color(0xFFEEF2F4),
-            surface = Color.White,
-            onBackground = Color(0xFF12232B),
-            onSurface = Color(0xFF12232B)
-        )
-    }
-    MaterialTheme(colorScheme = scheme) {
-        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            content()
-        }
-    }
-}
-
-object Recent {
-    private const val PREFS = "recent"
-    private const val KEY = "items"
-
-    fun get(ctx: Context): List<Pair<String, String>> {
-        val raw = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, "") ?: ""
-        return raw.split('\n').filter { it.contains('|') }.map {
-            it.substringBefore('|') to it.substringAfter('|')
-        }
-    }
-
-    fun add(ctx: Context, uri: Uri, name: String) {
-        val u = uri.toString()
-        val list = get(ctx).filter { it.first != u }.toMutableList()
-        list.add(0, u to name.replace('\n', ' ').replace('|', ' '))
-        val raw = list.take(10).joinToString("\n") { it.first + "|" + it.second }
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY, raw).apply()
+        setContent { Root(initial) }
     }
 }
 
@@ -130,34 +53,114 @@ object Recent {
 fun Root(initial: Uri?) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var loaded by remember { mutableStateOf<Loaded?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var busy by remember { mutableStateOf(false) }
+    var dark by remember { mutableStateOf(Prefs.dark(ctx)) }
+    var tab by remember { mutableIntStateOf(0) }
+    var opened by remember { mutableStateOf<Loaded?>(null) }
+    var startPages by remember { mutableStateOf(false) }
+    var busyMsg by remember { mutableStateOf<String?>(null) }
     var recent by remember { mutableStateOf(Recent.get(ctx)) }
+    var pending by remember { mutableStateOf<ByteArray?>(null) }
+    val toast: (String) -> Unit = { m -> Toast.makeText(ctx, m, Toast.LENGTH_SHORT).show() }
 
-    fun open(uri: Uri) {
+    fun runBusy(msg: String, block: suspend () -> Unit) {
         scope.launch {
-            busy = true
-            error = null
+            busyMsg = msg
             try {
-                val l = withContext(Dispatchers.IO) { Parsers.load(ctx, uri) }
-                loaded = l
-                Recent.add(ctx, uri, l.name)
-                recent = Recent.get(ctx)
+                block()
             } catch (e: Throwable) {
-                error = e.message ?: "Faylni ochib bo'lmadi."
+                toast(e.message ?: "Xatolik yuz berdi.")
             }
-            busy = false
+            busyMsg = null
         }
     }
 
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
+    fun open(uri: Uri, pagesFirst: Boolean = false) {
+        runBusy("Fayl ochilmoqda...") {
+            val l = withContext(Dispatchers.IO) { Parsers.load(ctx, uri) }
+            startPages = pagesFirst && l.content is Content.Pdf
+            opened = l
+            Recent.add(ctx, uri, l.name, Parsers.size(ctx, uri))
+            recent = Recent.get(ctx)
+        }
+    }
+
+    fun persistRead(uri: Uri) {
+        try {
+            ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        } catch (_: Exception) {
+        }
+    }
+
+    fun writePending(uri: Uri?) {
+        val b = pending
+        pending = null
+        if (uri == null || b == null) return
+        try {
+            ctx.contentResolver.openOutputStream(uri)?.use { it.write(b) }
             try {
-                ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                ctx.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
             } catch (_: Exception) {
             }
-            open(uri)
+            val name = Parsers.displayName(ctx, uri)
+            Recent.add(ctx, uri, name, b.size.toLong())
+            recent = Recent.get(ctx)
+            toast("Saqlandi: $name")
+        } catch (e: Exception) {
+            toast("Saqlab bo'lmadi")
+        }
+    }
+
+    val lPdf = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { writePending(it) }
+    val lDocx = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    ) { writePending(it) }
+    val lXlsx = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    ) { writePending(it) }
+    val lTxt = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { writePending(it) }
+
+    val save: SaveFn = { kind, name, bytes ->
+        pending = bytes
+        when (kind) {
+            "pdf" -> lPdf.launch(name)
+            "docx" -> lDocx.launch(name)
+            "xlsx" -> lXlsx.launch(name)
+            else -> lTxt.launch(name)
+        }
+    }
+
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u ->
+        if (u != null) {
+            persistRead(u)
+            open(u)
+        }
+    }
+    val pdfSplitPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u ->
+        if (u != null) {
+            persistRead(u)
+            open(u, pagesFirst = true)
+        }
+    }
+    val mergePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { list ->
+        if (list.size >= 2) {
+            runBusy("PDF fayllar birlashtirilmoqda...") {
+                val b = withContext(Dispatchers.IO) { PdfTools.merge(ctx, list) }
+                save("pdf", "Birlashtirilgan.pdf", b)
+            }
+        } else if (list.isNotEmpty()) {
+            toast("Kamida 2 ta PDF tanlang")
+        }
+    }
+    val scanFile = remember { File(ctx.cacheDir, "scan/scan.jpg").also { it.parentFile?.mkdirs() } }
+    val scanLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        if (ok) {
+            runBusy("PDF yaratilmoqda...") {
+                val b = withContext(Dispatchers.IO) { PdfTools.photoToPdf(scanFile) }
+                save("pdf", "Skan_${System.currentTimeMillis() / 1000}.pdf", b)
+            }
         }
     }
 
@@ -165,234 +168,90 @@ fun Root(initial: Uri?) {
         if (initial != null) open(initial)
     }
 
-    BackHandler(enabled = loaded != null) { loaded = null }
-
-    val current = loaded
-    if (current != null) {
-        Viewer(current) { loaded = null }
-    } else {
-        Home(
-            recent = recent,
-            busy = busy,
-            error = error,
-            onPick = { picker.launch(arrayOf("*/*")) },
-            onOpenRecent = { open(Uri.parse(it)) }
-        )
+    val current = opened
+    DisposableEffect(current) {
+        onDispose {
+            val c = current?.content
+            if (c is Content.Pdf) c.holder.close()
+        }
     }
-}
+    BackHandler(enabled = current != null) { opened = null }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun Home(
-    recent: List<Pair<String, String>>,
-    busy: Boolean,
-    error: String?,
-    onPick: () -> Unit,
-    onOpenRecent: (String) -> Unit
-) {
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = { TopAppBar(title = { Text("Hujjat") }) }
-    ) { pad ->
-        Column(
-            Modifier
-                .padding(pad)
-                .padding(horizontal = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                shape = RoundedCornerShape(14.dp)
-            ) {
-                Text(
-                    "Reklama yo'q. Obuna yo'q. Hisob shart emas. Ilovada internet ruxsati yo'q, fayllaringiz qurilmadan chiqmaydi.",
-                    modifier = Modifier.padding(14.dp),
-                    fontSize = 14.sp,
-                    lineHeight = 20.sp
-                )
-            }
-            Button(onClick = onPick, modifier = Modifier.fillMaxWidth()) {
-                Text("Fayl ochish")
-            }
-            Text(
-                "PDF, DOCX, XLSX, PPTX, ODT, ODS, ODP, TXT, CSV",
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.65f)
-            )
-            if (busy) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    CircularProgressIndicator(modifier = Modifier.height(20.dp).width(20.dp), strokeWidth = 2.dp)
-                    Text("Fayl ochilmoqda...")
-                }
-            }
-            if (error != null) {
-                Text(error, color = Color(0xFFC53030), fontSize = 14.sp)
-            }
-            if (recent.isNotEmpty()) {
-                Text("Oxirgi fayllar", fontSize = 15.sp, color = MaterialTheme.colorScheme.primary)
-                LazyColumn {
-                    items(recent) { (uri, name) ->
-                        Column(
-                            Modifier
-                                .fillMaxWidth()
-                                .clickable { onOpenRecent(uri) }
-                                .padding(vertical = 12.dp)
-                        ) {
-                            Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 15.sp)
+    HujjatTheme(dark) {
+        Box(Modifier.fillMaxSize()) {
+            if (current != null) {
+                Viewer(current, startPages, { opened = null }, save, toast)
+            } else {
+                Scaffold(
+                    containerColor = MaterialTheme.colorScheme.background,
+                    bottomBar = {
+                        NavigationBar {
+                            val items = listOf("⌂" to "Bosh", "▤" to "Fayllar", "✦" to "Asboblar", "⚙" to "Sozlamalar")
+                            items.forEachIndexed { i, (icon, label) ->
+                                NavigationBarItem(
+                                    selected = tab == i,
+                                    onClick = { tab = i },
+                                    icon = { Text(icon) },
+                                    label = { Text(label) }
+                                )
+                            }
+                        }
+                    }
+                ) { pad ->
+                    Box(Modifier.padding(pad)) {
+                        when (tab) {
+                            0 -> HomeScreen(
+                                recent = recent,
+                                onOpenFile = { filePicker.launch(arrayOf("*/*")) },
+                                onOpenRecent = { open(Uri.parse(it)) },
+                                onShare = { u, n -> Share.send(ctx, Uri.parse(u), n) },
+                                onGoFiles = { tab = 1 },
+                                onNewDoc = { opened = Loaded("Yangi hujjat.docx", Content.Text(""), null) },
+                                onNewSheet = { opened = Loaded("Yangi jadval.xlsx", Content.Table(emptyList()), null) },
+                                onNewSlide = { toast("Slayd muharriri keyingi versiyada qo'shiladi") },
+                                onNewPdf = { tab = 2 }
+                            )
+                            1 -> FilesScreen(
+                                onOpen = { open(it) },
+                                onPickFile = { filePicker.launch(arrayOf("*/*")) },
+                                onShare = { u, n -> Share.send(ctx, u, n) }
+                            )
+                            2 -> ToolsScreen(
+                                onMerge = { mergePicker.launch(arrayOf("application/pdf")) },
+                                onSplit = { pdfSplitPicker.launch(arrayOf("application/pdf")) },
+                                onScan = {
+                                    scanFile.parentFile?.mkdirs()
+                                    scanLauncher.launch(FileProvider.getUriForFile(ctx, Share.AUTHORITY, scanFile))
+                                },
+                                onSoon = { toast("Bu funksiya keyingi versiyada qo'shiladi") }
+                            )
+                            else -> SettingsScreen(
+                                dark = dark,
+                                onDark = { dark = it; Prefs.setDark(ctx, it) },
+                                onSoon = { toast("Bu til keyingi versiyada qo'shiladi") }
+                            )
                         }
                     }
                 }
             }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun Viewer(doc: Loaded, onBack: () -> Unit) {
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                navigationIcon = { TextButton(onClick = onBack) { Text("←", fontSize = 20.sp) } },
-                title = { Text(doc.name, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-            )
-        }
-    ) { pad ->
-        Box(Modifier.padding(pad).fillMaxSize()) {
-            when (val c = doc.content) {
-                is Content.Text -> TextView(c.text)
-                is Content.Table -> TableView(c.rows)
-                is Content.Slides -> SlidesView(c.slides)
-                is Content.Pdf -> PdfView(c.uri)
-            }
-        }
-    }
-}
-
-@Composable
-fun TextView(text: String) {
-    val lines = remember(text) { text.split('\n') }
-    SelectionContainer {
-        LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-            items(lines) { l ->
-                Text(if (l.isEmpty()) " " else l, fontSize = 16.sp, lineHeight = 24.sp)
-            }
-        }
-    }
-}
-
-@Composable
-fun SlidesView(slides: List<String>) {
-    LazyColumn(
-        Modifier.fillMaxSize().padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        itemsIndexed(slides) { i, s ->
-            Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(12.dp)) {
-                Column(Modifier.fillMaxWidth().padding(14.dp)) {
-                    Text("Slayd ${i + 1}", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.height(6.dp))
-                    Text(if (s.isBlank()) "(matn yo'q)" else s, fontSize = 15.sp, lineHeight = 22.sp)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun TableView(rows: List<List<String>>) {
-    val cols = (rows.maxOfOrNull { it.size } ?: 0).coerceAtMost(60)
-    val line = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.18f)
-    Box(Modifier.fillMaxSize().horizontalScroll(rememberScrollState())) {
-        LazyColumn {
-            itemsIndexed(rows) { _, r ->
-                Row {
-                    for (c in 0 until cols) {
-                        Text(
-                            r.getOrElse(c) { "" },
-                            modifier = Modifier
-                                .width(120.dp)
-                                .border(0.5.dp, line)
-                                .padding(6.dp),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            fontSize = 13.sp
-                        )
+            val msg = busyMsg
+            if (msg != null) {
+                Surface(
+                    modifier = Modifier.align(Alignment.Center),
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
+                    tonalElevation = 6.dp,
+                    shadowElevation = 8.dp
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        CircularProgressIndicator(strokeWidth = 2.dp)
+                        Text(msg)
                     }
                 }
             }
         }
-    }
-}
-
-class PdfHolder(ctx: Context, uri: Uri) {
-    private val pfd = ctx.contentResolver.openFileDescriptor(uri, "r")
-        ?: throw IllegalStateException("PDF faylini ochib bo'lmadi.")
-    private val renderer = PdfRenderer(pfd)
-    private val lock = Any()
-    private var closed = false
-    val count: Int = renderer.pageCount
-
-    fun render(index: Int, width: Int): Bitmap? {
-        synchronized(lock) {
-            if (closed) return null
-            val page = renderer.openPage(index)
-            try {
-                val h = (width.toFloat() * page.height / page.width).toInt().coerceAtLeast(1)
-                val bmp = Bitmap.createBitmap(width, h, Bitmap.Config.ARGB_8888)
-                bmp.eraseColor(android.graphics.Color.WHITE)
-                page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                return bmp
-            } finally {
-                page.close()
-            }
-        }
-    }
-
-    fun close() = synchronized(lock) {
-        if (!closed) {
-            closed = true
-            renderer.close()
-            pfd.close()
-        }
-    }
-}
-
-@Composable
-fun PdfView(uri: Uri) {
-    val ctx = LocalContext.current
-    val holder = remember(uri) { PdfHolder(ctx, uri) }
-    DisposableEffect(holder) { onDispose { holder.close() } }
-    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
-        items(holder.count) { i -> PageImage(holder, i) }
-    }
-}
-
-@Composable
-fun PageImage(holder: PdfHolder, index: Int) {
-    var bmp by remember(holder, index) { mutableStateOf<Bitmap?>(null) }
-    LaunchedEffect(holder, index) {
-        bmp = withContext(Dispatchers.Default) {
-            try {
-                holder.render(index, 1080)
-            } catch (_: Exception) {
-                null
-            }
-        }
-    }
-    val b = bmp
-    if (b != null) {
-        Image(
-            bitmap = b.asImageBitmap(),
-            contentDescription = "${index + 1}-sahifa",
-            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-            contentScale = ContentScale.FillWidth
-        )
-    } else {
-        Box(
-            Modifier.fillMaxWidth().aspectRatio(0.7f),
-            contentAlignment = Alignment.Center
-        ) { CircularProgressIndicator() }
     }
 }

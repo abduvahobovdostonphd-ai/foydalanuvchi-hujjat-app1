@@ -7,7 +7,7 @@ Ilovada `INTERNET` ruxsati yo'q: fayllar qurilmadan chiqmaydi.
 
 | Format | Holat |
 |---|---|
-| PDF | Sahifalarni ko'rish |
+| PDF | Sahifalarni ko'rish, yaqinlashtirish |
 | DOCX, ODT | Matnni ko'rish (formatlash yo'q) |
 | XLSX | Birinchi varaq jadval ko'rinishida (formulalar emas, hisoblangan qiymatlar) |
 | PPTX | Har slaydning matni |
